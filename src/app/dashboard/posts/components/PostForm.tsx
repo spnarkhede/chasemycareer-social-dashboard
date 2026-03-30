@@ -106,7 +106,45 @@ export function PostForm({ initialData, onSubmit, onCancel }: PostFormProps) {
 
   const onSubmitForm = (values: PostFormValues) => {
     onSubmit(values);
-  };
+  }; 
+
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiSuggestions, setAiSuggestions] = useState<any>(null);
+
+    const handleAIGenerate = async () => {
+        setAiLoading(true);
+        try {
+            const suggestion = await generateCaption({
+            topic: "career tips for job seekers",
+            platform: selectedPlatforms[0] || "linkedin",
+            tone: "professional",
+            });
+            setValue("caption", suggestion);
+            toast.success("AI-generated caption ready!");
+        } catch (error) {
+            toast.error("Failed to generate caption");
+        } finally {
+            setAiLoading(false);
+        }
+        };
+  
+    const handleAIOptimize = async () => {
+    setAiLoading(true);
+    try {
+        const optimized = await optimizeCaption({
+        caption: watch("caption"),
+        platform: selectedPlatforms[0] || "linkedin",
+        goal: "engagement",
+        });
+        setValue("caption", optimized.improved_version);
+        toast.success("Caption optimized!");
+    } catch (error) {
+        toast.error("Failed to optimize");
+    } finally {
+        setAiLoading(false);
+    }
+    };
+
 
   return (
     <form onSubmit={handleSubmit(onSubmitForm)} className="space-y-6">
@@ -347,6 +385,37 @@ export function PostForm({ initialData, onSubmit, onCancel }: PostFormProps) {
           {isSubmitting ? "Saving..." : initialData ? "Update Post" : "Create Post"}
         </Button>
       </div>
+
+    // Add AI buttons to form
+<div className="flex gap-2">
+  <Button
+    type="button"
+    variant="outline"
+    size="sm"
+    onClick={handleAIGenerate}
+    disabled={aiLoading}
+    className="gap-2"
+  >
+    <Sparkles className="h-4 w-4" />
+    {aiLoading ? "Generating..." : "AI Generate"}
+  </Button>
+  <Button
+    type="button"
+    variant="outline"
+    size="sm"
+    onClick={handleAIOptimize}
+    disabled={aiLoading || !watch("caption")}
+    className="gap-2"
+  >
+    <Wand2 className="h-4 w-4" />
+    AI Optimize
+  </Button>
+</div>
+
     </form>
   );
+
+    
+
+
 }
