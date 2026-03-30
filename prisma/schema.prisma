@@ -199,3 +199,441 @@ enum TaskStatus {
   REVIEW
   DONE
 }
+
+
+// Add to existing schema
+model EmailVerificationToken {
+  id        String   @id @default(cuid())
+  email     String
+  token     String   @unique
+  expires   DateTime
+  createdAt DateTime @default(now())
+  used      Boolean  @default(false)
+
+  @@index([email])
+  @@index([token])
+}
+
+model User {
+  // Add these fields to existing User model
+  emailVerified DateTime?
+  emailVerificationToken String? @unique
+  emailVerificationExpires DateTime?
+}
+
+
+// Add to User model
+model User {
+  twoFactorEnabled Boolean  @default(false)
+  twoFactorSecret  String?  @unique
+  twoFactorBackup  String[] // Backup codes
+}
+
+model Notification {
+  id        String   @id @default(cuid())
+  userId    String
+  type      String
+  title     String
+  message   String
+  read      Boolean  @default(false)
+  link      String?
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, read])
+  @@index([createdAt])
+}
+
+model User {
+  notifications Notification[]
+}
+
+
+model ABTest {
+  id          String   @id @default(cuid())
+  userId      String
+  name        String
+  variantA    Json
+  variantB    Json
+  platforms   String[]
+  audience    Json
+  duration    Int
+  status      String   @default("draft") // draft, running, completed
+  startDate   DateTime?
+  endDate     DateTime
+  winner      String?  // variantA or variantB
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  results     ABTestResult[]
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, status])
+}
+
+model ABTestResult {
+  id         String   @id @default(cuid())
+  abTestId   String
+  variant    String   // variantA or variantB
+  platform   String
+  impressions Int     @default(0)
+  engagements Int     @default(0)
+  clicks     Int      @default(0)
+  shares     Int      @default(0)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  abTest     ABTest   @relation(fields: [abTestId], references: [id], onDelete: Cascade)
+
+  @@unique([abTestId, variant, platform])
+  @@index([abTestId])
+}
+
+
+// Add to existing schema
+
+// Automation Rules
+model AutomationRule {
+  id              String   @id @default(cuid())
+  userId          String
+  name            String
+  description     String?
+  triggerType     TriggerType
+  triggerConfig   Json     // Platform, keywords, post IDs, etc.
+  actionType      ActionType
+  actionConfig    Json     // Template, delays, conditions
+  isActive        Boolean  @default(true)
+  priority        Int      @default(0)
+  dailyLimit      Int      @default(50)
+  sentToday       Int      @default(0)
+  lastReset       DateTime @default(now())
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  executions      AutomationExecution[]
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, isActive])
+  @@index([triggerType])
+}
+
+enum TriggerType {
+  COMMENT
+  FOLLOW
+  LIKE
+  SHARE
+  MENTION
+  DIRECT_MESSAGE
+}
+
+enum ActionType {
+  SEND_DM
+  SEND_EMAIL
+  ADD_TO_SEQUENCE
+  TAG_USER
+  ADD_TO_CRM
+}
+
+// Automation Executions (Log)
+model AutomationExecution {
+  id              String   @id @default(cuid())
+  ruleId          String
+  userId          String
+  triggerData     Json     // Comment/follower info
+  recipientId     String
+  recipientName   String
+  recipientEmail  String?
+  platform        String
+  messageSent     String?
+  status          ExecutionStatus @default(PENDING)
+  errorMessage    String?
+  sentAt          DateTime?
+  createdAt       DateTime @default(now())
+  rule            AutomationRule @relation(fields: [ruleId], references: [id], onDelete: Cascade)
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([ruleId, status])
+  @@index([userId, createdAt])
+  @@index([recipientId])
+}
+
+enum ExecutionStatus {
+  PENDING
+  PROCESSING
+  SENT
+  FAILED
+  SKIPPED
+  OPT_OUT
+}
+
+// DM Templates
+model DMTemplate {
+  id              String   @id @default(cuid())
+  userId          String
+  name            String
+  subject         String?
+  content         String   // Supports variables like {{name}}, {{post}}
+  variables       String[] // Available variables
+  platform        String
+  category        String   // welcome, followup, resource, promotion
+  isActive        Boolean  @default(true)
+  usageCount      Int      @default(0)
+  conversionRate  Float?   // Track effectiveness
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, isActive])
+  @@index([platform, category])
+}
+
+// Opt-Out Management
+model OptOut {
+  id              String   @id @default(cuid())
+  userId          String?
+  recipientId     String
+  recipientEmail  String?
+  platform        String
+  reason          String?
+  createdAt       DateTime @default(now())
+
+  @@unique([recipientId, platform])
+  @@index([recipientId])
+}
+
+// Message Queue
+model MessageQueue {
+  id              String   @id @default(cuid())
+  userId          String
+  platform        String
+  recipientId     String
+  recipientName   String
+  messageContent  String
+  templateId      String?
+  ruleId          String?
+  priority        Int      @default(0)
+  status          QueueStatus @default(PENDING)
+  scheduledAt     DateTime?
+  sentAt          DateTime?
+  errorMessage    String?
+  retryCount      Int      @default(0)
+  maxRetries      Int      @default(3)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([status, scheduledAt])
+  @@index([platform, status])
+  @@index([userId, status])
+}
+
+enum QueueStatus {
+  PENDING
+  PROCESSING
+  SENT
+  FAILED
+  DELAYED
+}
+
+// Add to User model
+model User {
+  // ... existing fields
+  automationRules      AutomationRule[]
+  automationExecutions AutomationExecution[]
+  dmTemplates          DMTemplate[]
+  messageQueue         MessageQueue[]
+  optOuts              OptOut[]
+}
+
+// 1. Add database indexes (prisma/schema.prisma)
+model Post {
+  @@index([userId, status])
+  @@index([userId, createdAt])
+  @@index([scheduledDate, status])
+  @@index([platforms])
+}
+
+model User {
+  @@index([email])
+  @@index([role])
+}
+
+
+// prisma/schema.prisma
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique @db.VarChar(255)
+  // ... other fields
+  
+  @@index([email])
+  @@index([createdAt])
+}
+
+model Post {
+  id            String   @id @default(cuid())
+  userId        String
+  status        String
+  scheduledDate DateTime?
+  createdAt     DateTime @default(now())
+  // ... other fields
+  
+  @@index([userId, status])
+  @@index([userId, createdAt])
+  @@index([scheduledDate, status])
+  @@index([platforms])
+}
+
+model AutomationRule {
+  id        String   @id @default(cuid())
+  userId    String
+  isActive  Boolean  @default(true)
+  // ... other fields
+  
+  @@index([userId, isActive])
+  @@index([triggerType])
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  userId    String?
+  eventType String
+  createdAt DateTime @default(now())
+  // ... other fields
+  
+  @@index([userId, createdAt])
+  @@index([eventType, createdAt])
+  @@index([createdAt])
+}
+
+model MessageQueue {
+  id        String   @id @default(cuid())
+  userId    String
+  status    String
+  platform  String
+  // ... other fields
+  
+  @@index([status, scheduledAt])
+  @@index([platform, status])
+  @@index([userId, status])
+}
+
+
+// Add to existing schema
+
+// Link Pages (Like Linktree)
+model LinkPage {
+  id              String   @id @default(cuid())
+  userId          String
+  username        String   @unique // e.g., /chasemycareer
+  displayName     String
+  bio             String?
+  avatar          String?
+  banner          String?
+  theme           String   @default("default")
+  backgroundColor String?
+  textColor       String?
+  font            String   @default("inter")
+  isActive        Boolean  @default(true)
+  isVerified      Boolean  @default(false)
+  customDomain    String?  @unique // e.g., links.chasemycareer.com
+  seoTitle        String?
+  seoDescription String?
+  seoImage        String?
+  viewCount       Int      @default(0)
+  clickCount      Int      @default(0)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  links           Link[]
+  socialProfiles  SocialProfile[]
+  analytics       LinkAnalytics[]
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([username])
+  @@index([userId, isActive])
+  @@index([customDomain])
+}
+
+// Individual Links on the page
+model Link {
+  id              String   @id @default(cuid())
+  linkPageId      String
+  title           String
+  url             String
+  description     String?
+  icon            String?  // Icon name or emoji
+  thumbnail       String?
+  type            LinkType @default(EXTERNAL)
+  category        String?  // e.g., "social", "content", "product"
+  order           Int      @default(0)
+  isActive        Boolean  @default(true)
+  clickCount      Int      @default(0)
+  startDate       DateTime? // Schedule link activation
+  endDate         DateTime? // Schedule link deactivation
+  utmSource       String?
+  utmMedium       String?
+  utmCampaign     String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  linkPage        LinkPage @relation(fields: [linkPageId], references: [id], onDelete: Cascade)
+  analytics       LinkAnalytics[]
+
+  @@index([linkPageId, order])
+  @@index([linkPageId, isActive])
+  @@index([type])
+}
+
+enum LinkType {
+  EXTERNAL
+  EMAIL
+  PHONE
+  TEXT
+  VIDEO
+  IMAGE
+  FILE
+  FORM
+}
+
+// Social Media Profiles (displayed on link page)
+model SocialProfile {
+  id              String   @id @default(cuid())
+  linkPageId      String
+  platform        String   // linkedin, instagram, twitter, etc.
+  username        String
+  url             String
+  icon            String?
+  order           Int      @default(0)
+  isActive        Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  linkPage        LinkPage @relation(fields: [linkPageId], references: [id], onDelete: Cascade)
+
+  @@index([linkPageId, order])
+  @@index([platform])
+}
+
+// Link Click Analytics
+model LinkAnalytics {
+  id              String   @id @default(cuid())
+  linkPageId      String?
+  linkId          String?
+  userId          String?
+  ipAddress       String?
+  userAgent       String?
+  referrer        String?
+  country         String?
+  city            String?
+  device          String? // mobile, desktop, tablet
+  browser         String?
+  os              String?
+  clickedAt       DateTime @default(now())
+  linkPage        LinkPage? @relation(fields: [linkPageId], references: [id], onDelete: Cascade)
+  link            Link?     @relation(fields: [linkId], references: [id], onDelete: Cascade)
+
+  @@index([linkPageId, clickedAt])
+  @@index([linkId, clickedAt])
+  @@index([clickedAt])
+  @@index([country])
+  @@index([device])
+}
+
+// Add to User model
+model User {
+  // ... existing fields
+  linkPages       LinkPage[]
+}

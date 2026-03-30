@@ -1,83 +1,137 @@
 // middleware.ts
 import { auth } from "@/lib/auth";
 import { NextResponse } from "next/server";
+import { ratelimit } from "@/lib/rate-limit";
+import { createAuditLog, AuditEventType } from "@/lib/security/audit-logger";
 
-export default auth((req) => {
-  const isLoggedIn = !!req.auth;
-  const { pathname } = req.nextUrl;
+export default auth(async (request) => {
+  const { nextUrl } = request;
+  const isLoggedIn = !!request.auth;
+  const isApiRoute = nextUrl.pathname.startsWith("/api");
+  const isAuthRoute = nextUrl.pathname.startsWith("/auth");
+  const isDashboardRoute = nextUrl.pathname.startsWith("/dashboard");
+  const isPublicRoute = ["/", "/auth/signin", "/auth/signup", "/auth/verify-email"].includes(nextUrl.pathname);
 
-  // Define protected routes
-  const protectedRoutes = [
-    "/dashboard",
-    "/api/posts",
-    "/api/analytics",
-    "/api/calendar",
-    "/api/competitors",
-    "/api/news",
-  ];
+  // ===========================================
+  // SECURITY HEADERS (All Routes)
+  // ===========================================
+  const response = NextResponse.next();
+  
+  // Prevent clickjacking
+  response.headers.set("X-Frame-Options", "DENY");
+  
+  // Prevent MIME type sniffing
+  response.headers.set("X-Content-Type-Options", "nosniff");
+  
+  // Control referrer information
+  response.headers.set("Referrer-Policy", "strict-origin-when-cross-origin");
+  
+  // Restrict powerful features
+  response.headers.set(
+    "Permissions-Policy",
+    "camera=(), microphone=(), geolocation=(), payment=(), usb=(), magnetometer=(), gyroscope=(), accelerometer=()"
+  );
+  
+  // Content Security Policy
+  response.headers.set(
+    "Content-Security-Policy",
+    [
+      "default-src 'self'",
+      "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://js.sentry-cdn.com https://*.posthog.com",
+      "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+      "img-src 'self' data: https: blob:",
+      "font-src 'self' https://fonts.gstatic.com",
+      "connect-src 'self' https://*.sentry.io https://*.upstash.io https://*.posthog.com",
+      "frame-ancestors 'none'",
+      "base-uri 'self'",
+      "form-action 'self'",
+      "upgrade-insecure-requests",
+    ].join("; ")
+  );
+  
+  // HTTP Strict Transport Security
+  response.headers.set(
+    "Strict-Transport-Security",
+    "max-age=31536000; includeSubDomains; preload"
+  );
+  
+  // XSS Protection (legacy)
+  response.headers.set("X-XSS-Protection", "1; mode=block");
+  
+  // ===========================================
+  // RATE LIMITING (API Routes)
+  // ===========================================
+  if (isApiRoute) {
+    const ip = request.headers.get("x-forwarded-for")?.split(",")[0] || "unknown";
+    const userId = request.auth?.user?.id || ip;
+    
+    const { success, limit, reset, remaining } = await ratelimit.limit(userId);
 
-  // Define auth routes (redirect if already logged in)
-  const authRoutes = ["/auth/signin", "/auth/signup", "/auth/error"];
+    response.headers.set("X-RateLimit-Limit", limit.toString());
+    response.headers.set("X-RateLimit-Remaining", remaining.toString());
+    response.headers.set("X-RateLimit-Reset", reset.toString());
 
-  // Define public API routes
-  const publicApiRoutes = ["/api/auth"];
+    if (!success) {
+      await createAuditLog({
+        eventType: AuditEventType.SECURITY_IP_BLOCKED,
+        action: "Rate limit exceeded",
+        ipAddress: ip,
+        status: "warning",
+      });
 
-  // Check if it's an API route
-  const isApiRoute = pathname.startsWith("/api");
-
-  // Allow public API routes
-  if (publicApiRoutes.some(route => pathname.startsWith(route))) {
-    return NextResponse.next();
-  }
-
-  // Protect API routes
-  if (isApiRoute && !pathname.startsWith("/api/auth")) {
-    if (!isLoggedIn) {
       return NextResponse.json(
-        { error: "Unauthorized", message: "Authentication required" },
-        { status: 401 }
+        { error: "Too many requests", code: "RATE_LIMIT_EXCEEDED" },
+        { status: 429, headers: response.headers }
       );
     }
-    return NextResponse.next();
   }
 
-  // Handle auth pages
-  if (authRoutes.some(route => pathname.startsWith(route))) {
-    if (isLoggedIn) {
-      return NextResponse.redirect(new URL("/dashboard", req.url));
+  // ===========================================
+  // AUTHENTICATION CHECKS
+  // ===========================================
+  
+  // Protect API routes
+  if (isApiRoute && !nextUrl.pathname.startsWith("/api/auth") && !nextUrl.pathname.startsWith("/api/webhooks")) {
+    if (!isLoggedIn) {
+      return NextResponse.json(
+        { error: "Unauthorized", code: "AUTH_REQUIRED" },
+        { status: 401, headers: response.headers }
+      );
     }
-    return NextResponse.next();
+  }
+
+  // Auth pages redirect
+  if (isAuthRoute) {
+    if (isLoggedIn && !nextUrl.pathname.includes("verify-email")) {
+      return NextResponse.redirect(new URL("/dashboard", nextUrl));
+    }
+    return response;
   }
 
   // Protect dashboard routes
-  if (protectedRoutes.some(route => pathname.startsWith(route))) {
+  if (isDashboardRoute) {
     if (!isLoggedIn) {
-      return NextResponse.redirect(new URL("/auth/signin", req.url));
+      return NextResponse.redirect(new URL("/auth/signin", nextUrl));
     }
-    return NextResponse.next();
   }
 
   // Handle root path
-  if (pathname === "/") {
+  if (nextUrl.pathname === "/") {
     if (isLoggedIn) {
-      return NextResponse.redirect(new URL("/dashboard", req.url));
+      return NextResponse.redirect(new URL("/dashboard", nextUrl));
     }
-    return NextResponse.redirect(new URL("/auth/signin", req.url));
+    return NextResponse.redirect(new URL("/auth/signin", nextUrl));
   }
 
-  return NextResponse.next();
+  // Add security info to headers
+  response.headers.set("X-Request-Id", crypto.randomUUID());
+  response.headers.set("X-Response-Time", Date.now().toString());
+
+  return response;
 });
 
-// Configure which routes should be processed by middleware
 export const config = {
   matcher: [
-    /*
-     * Match all request paths except:
-     * - _next/static (static files)
-     * - _next/image (image optimization files)
-     * - favicon.ico (favicon file)
-     * - public files (public folder)
-     */
-    "/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)",
+    "/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp|css|js)$).*)",
   ],
 };
